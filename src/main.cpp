@@ -459,24 +459,6 @@ void buildFancyPathUI() {
 
   auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
 
-  if (ImGui::Button("Push Vertex")) {
-
-    long long int iV = psMesh->selectVertex();
-    if (iV != -1) {
-      Vertex v = mesh->vertex(iV);
-      fancyPathVerts.push_back(v);
-      fancyPathVertsPs.emplace_back((size_t)iV, (int)fancyPathVertsPs.size());
-      updateFancyPathViz();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Pop Vertex")) {
-    if (!fancyPathVerts.empty()) {
-      fancyPathVerts.pop_back();
-      fancyPathVertsPs.pop_back();
-    }
-    updateFancyPathViz();
-  }
   if (ImGui::Button("Construct shortest loop")) {
     clearData();
     fancyPathClosed = true;
@@ -509,6 +491,24 @@ void buildFancyPathUI() {
     locallyShorten();
   }
 
+  if (ImGui::Button("Push Vertex")) {
+
+    long long int iV = psMesh->selectVertex();
+    if (iV != -1) {
+      Vertex v = mesh->vertex(iV);
+      fancyPathVerts.push_back(v);
+      fancyPathVertsPs.emplace_back((size_t)iV, (int)fancyPathVertsPs.size());
+      updateFancyPathViz();
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Pop Vertex")) {
+    if (!fancyPathVerts.empty()) {
+      fancyPathVerts.pop_back();
+      fancyPathVertsPs.pop_back();
+    }
+    updateFancyPathViz();
+  }
   if (ImGui::Button("New Path From These Points")) {
     edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
                                                                       fancyPathMarkVerts);
@@ -528,6 +528,40 @@ void buildFancyPathUI() {
 void myCallback() {
 
   ImGui::TextUnformatted("Input");
+
+  if (ImGui::Button("Construct shortest loop")) {
+    clearData();
+    fancyPathVertsPs.clear();
+    fancyPathClosed = true;
+    long long int iV = psMesh->selectVertex();
+    long long int jV = psMesh->selectVertex();
+    long long int kV = psMesh->selectVertex();
+    if (iV != -1) {
+      Vertex v = mesh->vertex(iV);
+      fancyPathVerts.push_back(v);
+      fancyPathVertsPs.emplace_back((size_t)iV, (int)fancyPathVertsPs.size());
+    }
+    if (jV != -1) {
+      Vertex v = mesh->vertex(jV);
+      fancyPathVerts.push_back(v);
+      fancyPathVertsPs.emplace_back((size_t)jV, (int)fancyPathVertsPs.size());
+    }    
+    if (kV != -1) {
+      Vertex v = mesh->vertex(kV);
+      fancyPathVerts.push_back(v);
+      fancyPathVertsPs.emplace_back((size_t)kV, (int)fancyPathVertsPs.size());
+    }  
+    edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
+                                                                      fancyPathMarkVerts);
+    if (edgeNetwork == nullptr) {
+      polyscope::warning("could not initialize fancy edge path between vertices");
+      return;
+    }
+    edgeNetwork->posGeom = geometry.get();
+    auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
+    updateFancyPathViz();
+    locallyShorten();
+  }
 
   if (ImGui::Button("Construct new Dijkstra path from endpoints")) {
     clearData();
