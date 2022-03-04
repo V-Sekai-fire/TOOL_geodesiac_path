@@ -68,7 +68,7 @@ void createPathFromPoints() {
     }
     // Visualize balls at marked
     polyscope::PointCloud *psCloud = polyscope::registerPointCloud("marked vertices", cloud);
-    psCloud->setPointColor(polyscope::render::RGB_BLACK);
+    psCloud->setPointColor(polyscope::render::RGB_DARKGRAY);
   }
 }
 
