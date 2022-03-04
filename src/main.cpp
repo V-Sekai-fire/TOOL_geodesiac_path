@@ -116,14 +116,10 @@ void buildFancyPathUI() {
 
 // A user-defined callback, for creating control panels (etc)
 void myCallback() {
-
-  ImGui::TextUnformatted("Input");
-
-  if (ImGui::Button("Construct new Dijkstra path from endpoints")) {
+  if (ImGui::Button("Construct new shortest local path from endpoints")) {
     clearData();
     createPathFromPoints();
   }
-
   ImGui::PushItemWidth(150);
   ImGui::PopItemWidth();
 }
