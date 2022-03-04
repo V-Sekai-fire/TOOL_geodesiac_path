@@ -43,23 +43,35 @@ int maxInsertions = -1;
 
 void createPathFromPoints() {
   long long int iVStart = psMesh->selectVertex();
-  long long int iVMiddle = psMesh->selectVertex();
   long long int iVEnd = psMesh->selectVertex();
 
-  if (iVStart == -1 || iVMiddle == -1 || iVEnd == -1) return;
+  if (iVStart == -1 || iVEnd == -1) return;
 
-  GeodesicAlgorithmExact mmp(*mesh, *geometry);
+  GeodesicAlgorithmExact mmp(*mesh, *geometry); 
+  
+  Vertex furthestVertex = Vertex(mesh.get(), iVEnd);
+  {
+    std::vector<SurfacePoint> sourcePoints;
+    sourcePoints.push_back(Vertex(mesh.get(), iVStart));
+    mmp.propagate(sourcePoints);
+    VertexData<double> distToSource = mmp.getDistanceFunction();
+    for (Vertex v : mesh->vertices()) {
+      if (distToSource[v] < distToSource[iVEnd] * 2.0) {
+        furthestVertex = v;
+      } 
+    }
+  }
   std::vector<SurfacePoint> finalPath;
   {
     std::vector<SurfacePoint> sourcePoints;
     sourcePoints.push_back(Vertex(mesh.get(), iVStart));
     mmp.propagate(sourcePoints);
-    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVMiddle));
+    std::vector<SurfacePoint> path = mmp.traceBack(furthestVertex);
     finalPath.insert(finalPath.end(), path.begin(), path.end());
   }
   {
     std::vector<SurfacePoint> sourcePoints;
-    sourcePoints.push_back(Vertex(mesh.get(), iVMiddle));
+    sourcePoints.push_back(furthestVertex);
     mmp.propagate(sourcePoints);
     std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVEnd));
     finalPath.insert(finalPath.end(), path.begin(), path.end());
