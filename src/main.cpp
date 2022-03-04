@@ -531,6 +531,7 @@ void myCallback() {
     updateFancyPathViz();
     locallyShorten();
     makeDelaunay();
+    delaunayRefine();
   }
 
   if (ImGui::Button("Construct new Dijkstra path from endpoints")) {
