@@ -58,7 +58,6 @@ void createPathFromPoints() {
     for (Vertex v : mesh->vertices()) {
       if (distToSource[v] < distToSource[iVEnd]) {
         furthestVertex = v;
-        break;
       } 
     }
   }
