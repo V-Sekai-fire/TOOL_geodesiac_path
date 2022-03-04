@@ -124,32 +124,7 @@ void myCallback() {
     createPathFromPoints();
   }
 
-  if (ImGui::TreeNode("Construct fancy path")) {
-    buildFancyPathUI();
-    ImGui::TreePop();
-  }
-
   ImGui::PushItemWidth(150);
-
-  ImGui::Separator();
-  ImGui::TextUnformatted("Algorithm");
-
-  ImGui::Checkbox("Straighten at marked", &straightenAtMarked);
-  ImGui::Checkbox("Limit Iteration Count", &iterativeShortenUseIterationCap);
-  if (iterativeShortenUseIterationCap) {
-    ImGui::SameLine();
-    ImGui::InputInt("Iters: ", &iterativeShortenIterationCap);
-  }
-
-  ImGui::Checkbox("Limit Length Decrease", &useIterativeShortenLengthLim);
-  if (useIterativeShortenLengthLim) {
-    ImGui::SameLine();
-    ImGui::InputFloat("Relative lim: ", &iterativeShortenLengthLim);
-  }
-
-  // ==== Visualization
-  ImGui::Separator();
-  ImGui::TextUnformatted("Visualization & Export");
   ImGui::PopItemWidth();
 }
 
