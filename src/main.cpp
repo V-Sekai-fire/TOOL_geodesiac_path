@@ -1,7 +1,3 @@
-#include "geometrycentral/surface/edge_length_geometry.h"
-#include "geometrycentral/surface/flip_geodesics.h"
-#include "geometrycentral/surface/manifold_surface_mesh.h"
-#include "geometrycentral/surface/mesh_graph_algorithms.h"
 #include "geometrycentral/surface/meshio.h"
 #include "geometrycentral/surface/polygon_soup_mesh.h"
 #include "geometrycentral/surface/vertex_position_geometry.h"
@@ -88,31 +84,6 @@ std::vector<Vertex> fancyPathVerts;
 std::vector<std::pair<size_t, int>> fancyPathVertsPs;
 VertexData<double> fancyPathVertexNumbers;
 bool fancyPathMarkVerts = false;
-void buildFancyPathUI() {
-
-  auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
-
-  if (ImGui::Button("Push Vertex")) {
-
-    long long int iV = psMesh->selectVertex();
-    if (iV != -1) {
-      Vertex v = mesh->vertex(iV);
-      fancyPathVerts.push_back(v);
-      fancyPathVertsPs.emplace_back((size_t)iV, (int)fancyPathVertsPs.size());
-      updateFancyPathViz();
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Pop Vertex")) {
-    if (!fancyPathVerts.empty()) {
-      fancyPathVerts.pop_back();
-      fancyPathVertsPs.pop_back();
-    }
-    updateFancyPathViz();
-  }
-  ImGui::Checkbox("Create Closed Path", &fancyPathClosed);
-  ImGui::Checkbox("Mark interior vertices", &fancyPathMarkVerts);
-}
 
 // A user-defined callback, for creating control panels (etc)
 void myCallback() {
@@ -127,11 +98,10 @@ void myCallback() {
 int main(int argc, char** argv) {
 
   // Configure the argument parser
-  args::ArgumentParser parser("Flip edges to find geodesic paths.");
+  args::ArgumentParser parser("Find geodesic paths.");
   args::Positional<std::string> inputFilename(parser, "mesh", "A mesh file.");
 
   args::Group output(parser, "ouput");
-  // args::Flag noGUI(output, "noGUI", "exit after processing and do not open the GUI", {"noGUI"});
 
   // Parse args
   try {
@@ -152,7 +122,6 @@ int main(int argc, char** argv) {
   }
 
   // Set options
-  // withGUI = !noGUI;
   withGUI = true;
 
   // Initialize polyscope
@@ -170,8 +139,6 @@ int main(int argc, char** argv) {
     psMesh = polyscope::registerSurfaceMesh("input mesh", geometry->inputVertexPositions, mesh->getFaceVertexList(),
                                             polyscopePermutations(*mesh));
   }
-
-  // Perform any operations requested via command line arguments
 
   // Give control to the gui
   if (withGUI) {
