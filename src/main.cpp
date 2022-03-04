@@ -530,6 +530,7 @@ void myCallback() {
     auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
     updateFancyPathViz();
     locallyShorten();
+    makeDelaunay();
   }
 
   if (ImGui::Button("Construct new Dijkstra path from endpoints")) {
