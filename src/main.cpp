@@ -43,22 +43,39 @@ int maxInsertions = -1;
 
 void createPathFromPoints() {
   long long int iVStart = psMesh->selectVertex();
+  long long int iVMiddle = psMesh->selectVertex();
   long long int iVEnd = psMesh->selectVertex();
 
-  if (iVStart == -1 || iVEnd == -1) return;
+  if (iVStart == -1 || iVMiddle == -1 || iVEnd == -1) return;
 
   GeodesicAlgorithmExact mmp(*mesh, *geometry);
-
-  std::vector<SurfacePoint> sourcePoints;
-
-  sourcePoints.push_back(Vertex(mesh.get(), iVStart));
-  mmp.propagate(sourcePoints);
-  std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVEnd));
+  std::vector<SurfacePoint> finalPath;
+  {
+    std::vector<SurfacePoint> sourcePoints;
+    sourcePoints.push_back(Vertex(mesh.get(), iVStart));
+    mmp.propagate(sourcePoints);
+    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVMiddle));
+    finalPath.insert(finalPath.end(), path.begin(), path.end());
+  }
+  {
+    std::vector<SurfacePoint> sourcePoints;
+    sourcePoints.push_back(Vertex(mesh.get(), iVMiddle));
+    mmp.propagate(sourcePoints);
+    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVEnd));
+    finalPath.insert(finalPath.end(), path.begin(), path.end());
+  }
+  {
+    std::vector<SurfacePoint> sourcePoints;
+    sourcePoints.push_back(Vertex(mesh.get(), iVEnd));
+    mmp.propagate(sourcePoints);
+    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVStart));
+    finalPath.insert(finalPath.end(), path.begin(), path.end());
+  }
 
   psMesh->removeAllQuantities();
   { // Marked vertices
     std::vector<Vector3> cloud;
-    for (SurfacePoint p : path) {
+    for (SurfacePoint p : finalPath) {
       Vector3 p3d = p.interpolate(geometry->inputVertexPositions);
       cloud.push_back(p3d);
     }
