@@ -57,7 +57,7 @@ void createPathFromPoints() {
     mmp.propagate(sourcePoints);
     VertexData<double> distToSource = mmp.getDistanceFunction();
     for (Vertex v : mesh->vertices()) {
-      if (distToSource[v] < distToSource[iVMiddle]) {
+      if (distToSource[v] < distToSource[iVOpposite]) {
         furthestVertex = v;
       } 
     }
