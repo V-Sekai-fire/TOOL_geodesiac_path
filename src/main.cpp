@@ -56,12 +56,20 @@ void createPathFromPoints() {
     mmp.propagate(sourcePoints);
     VertexData<double> distToSource = mmp.getDistanceFunction();
     for (Vertex v : mesh->vertices()) {
-      if (distToSource[v] < distToSource[iVEnd] * 2.0) {
+      if (distToSource[v] < distToSource[iVEnd]) {
         furthestVertex = v;
+        break;
       } 
     }
   }
   std::vector<SurfacePoint> finalPath;
+  {
+    std::vector<SurfacePoint> sourcePoints;
+    sourcePoints.push_back(Vertex(mesh.get(), iVStart));
+    mmp.propagate(sourcePoints);
+    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVEnd));
+    finalPath.insert(finalPath.end(), path.begin(), path.end());
+  }
   {
     std::vector<SurfacePoint> sourcePoints;
     sourcePoints.push_back(Vertex(mesh.get(), iVStart));
@@ -71,16 +79,9 @@ void createPathFromPoints() {
   }
   {
     std::vector<SurfacePoint> sourcePoints;
-    sourcePoints.push_back(furthestVertex);
-    mmp.propagate(sourcePoints);
-    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVEnd));
-    finalPath.insert(finalPath.end(), path.begin(), path.end());
-  }
-  {
-    std::vector<SurfacePoint> sourcePoints;
     sourcePoints.push_back(Vertex(mesh.get(), iVEnd));
     mmp.propagate(sourcePoints);
-    std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVStart));
+    std::vector<SurfacePoint> path = mmp.traceBack(furthestVertex);
     finalPath.insert(finalPath.end(), path.begin(), path.end());
   }
 
