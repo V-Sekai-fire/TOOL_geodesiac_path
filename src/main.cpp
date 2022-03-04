@@ -50,13 +50,9 @@ void createPathFromPoints() {
   GeodesicAlgorithmExact mmp(*mesh, *geometry);
 
   std::vector<SurfacePoint> sourcePoints;
-  
-  SurfacePoint queryPoint2 = Vertex(mesh.get(), iVStart);
 
-  sourcePoints.push_back(queryPoint2);
-
+  sourcePoints.push_back(Vertex(mesh.get(), iVStart));
   mmp.propagate(sourcePoints);
-
   std::vector<SurfacePoint> path = mmp.traceBack(Vertex(mesh.get(), iVEnd));
 
   psMesh->removeAllQuantities();
