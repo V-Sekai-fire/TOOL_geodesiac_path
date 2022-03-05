@@ -11,7 +11,6 @@
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
 
-#include "args/args.hxx"
 #include "imgui.h"
 
 using namespace geometrycentral;
