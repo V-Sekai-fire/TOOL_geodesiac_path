@@ -505,6 +505,7 @@ void myCallback() {
     long long int iV = psMesh->selectVertex();
     long long int jV = psMesh->selectVertex();
     long long int kV = psMesh->selectVertex();
+    long long int lV = psMesh->selectVertex();
     if (iV != -1) {
       Vertex v = mesh->vertex(iV);
       fancyPathVerts.push_back(v);
@@ -520,6 +521,11 @@ void myCallback() {
       fancyPathVerts.push_back(v);
       fancyPathVertsPs.emplace_back((size_t)kV, (int)fancyPathVertsPs.size());
     }  
+    if (lV != -1) {
+      Vertex v = mesh->vertex(lV);
+      fancyPathVerts.push_back(v);
+      fancyPathVertsPs.emplace_back((size_t)lV, (int)fancyPathVertsPs.size());
+    }  
     edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
                                                                       fancyPathMarkVerts);
     if (edgeNetwork == nullptr) {
@@ -529,7 +535,6 @@ void myCallback() {
     edgeNetwork->posGeom = geometry.get();
     auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
     updateFancyPathViz();
-    locallyShorten();
     makeDelaunay();
     delaunayRefine();
   }
