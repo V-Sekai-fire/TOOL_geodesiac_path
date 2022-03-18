@@ -1,4 +1,4 @@
-This is an fork of [You Can Find Geodesic Paths in Triangle Meshes by Just Flipping Edges] trying to make the tool production ready.
+This is an fork of **You Can Find Geodesic Paths in Triangle Meshes by Just Flipping Edges** that tries to make the tool production ready.
 
 C++ demo code and application for "[You Can Find Geodesic Paths in Triangle Meshes by Just Flipping Edges](https://nmwsharp.com/research/flip-geodesics/)", by [Nicholas Sharp](https://nmwsharp.com/) and [Keenan Crane](http://keenan.is/here) at SIGGRAPH Asia 2020.
 
