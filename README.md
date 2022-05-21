@@ -101,6 +101,4 @@ The  <kbd>export path lines</kbd> button writes a file called `lines_out.obj`, c
 
 ## Command line interface
 
-**coming soon :)**
-
 The executable also supports scripted usage via a simple command line interface. See the `flip_geodesics --help` for additional documentation. This functionality essentially mimics the GUI usage described above; see there for details.
