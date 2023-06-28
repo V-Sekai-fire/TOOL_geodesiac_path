@@ -502,30 +502,18 @@ void myCallback() {
     fancyPathVertsPs.clear();
     fancyPathClosed = true;
     fancyPathMarkVerts = true;
-    long long int iV = psMesh->selectVertex();
-    long long int jV = psMesh->selectVertex();
-    long long int kV = psMesh->selectVertex();
-    long long int lV = psMesh->selectVertex();
-    if (iV != -1) {
-      Vertex v = mesh->vertex(iV);
+
+    while(true) {
+      long long int vIndex = psMesh->selectVertex();
+      if (vIndex == -1) { // User cancelled the selection
+        break;
+      }
+      
+      Vertex v = mesh->vertex(vIndex);
       fancyPathVerts.push_back(v);
-      fancyPathVertsPs.emplace_back((size_t)iV, (int)fancyPathVertsPs.size());
+      fancyPathVertsPs.emplace_back((size_t)vIndex, (int)fancyPathVertsPs.size());
     }
-    if (jV != -1) {
-      Vertex v = mesh->vertex(jV);
-      fancyPathVerts.push_back(v);
-      fancyPathVertsPs.emplace_back((size_t)jV, (int)fancyPathVertsPs.size());
-    }    
-    if (kV != -1) {
-      Vertex v = mesh->vertex(kV);
-      fancyPathVerts.push_back(v);
-      fancyPathVertsPs.emplace_back((size_t)kV, (int)fancyPathVertsPs.size());
-    }  
-    if (lV != -1) {
-      Vertex v = mesh->vertex(lV);
-      fancyPathVerts.push_back(v);
-      fancyPathVertsPs.emplace_back((size_t)lV, (int)fancyPathVertsPs.size());
-    }  
+
     edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
                                                                       fancyPathMarkVerts);
     if (edgeNetwork == nullptr) {
