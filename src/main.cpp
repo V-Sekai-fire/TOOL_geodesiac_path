@@ -642,59 +642,34 @@ void myCallback() {
 }
 
 int main(int argc, char** argv) {
-
-  // Configure the argument parser
   args::ArgumentParser parser("Flip edges to find geodesic paths.");
   args::Positional<std::string> inputFilename(parser, "mesh", "A mesh file.");
 
-  args::Group output(parser, "ouput");
-  // args::Flag noGUI(output, "noGUI", "exit after processing and do not open the GUI", {"noGUI"});
-
-  // Parse args
   try {
     parser.ParseCLI(argc, argv);
   } catch (args::Help&) {
     std::cout << parser;
     return 0;
   } catch (args::ParseError& e) {
-    std::cerr << e.what() << std::endl;
-    std::cerr << parser;
+    std::cerr << e.what() << std::endl << parser;
     return 1;
   }
 
-  // Make sure a mesh name was given
   if (!inputFilename) {
     std::cerr << "Please specify a mesh file as argument" << std::endl;
     return EXIT_FAILURE;
   }
 
-  // Set options
-  // withGUI = !noGUI;
-  withGUI = true;
+  polyscope::init();
+  polyscope::state::userCallback = myCallback;
 
-  // Initialize polyscope
-  if (withGUI) {
-    polyscope::init();
-    polyscope::state::userCallback = myCallback;
-  }
-
-  // Load mesh
   loadedFilename = args::get(inputFilename);
   std::tie(mesh, geometry) = readManifoldSurfaceMesh(loadedFilename);
 
-  if (withGUI) {
-    // Register the mesh with polyscope
-    psMesh = polyscope::registerSurfaceMesh("input mesh", geometry->inputVertexPositions, mesh->getFaceVertexList(),
-                                            polyscopePermutations(*mesh));
-  }
+  psMesh = polyscope::registerSurfaceMesh("input mesh", geometry->inputVertexPositions, mesh->getFaceVertexList(),
+                                          polyscopePermutations(*mesh));
 
-  // Perform any operations requested via command line arguments
-
-  // Give control to the gui
-  if (withGUI) {
-    // Give control to the polyscope gui
-    polyscope::show();
-  }
+  polyscope::show();
 
   return EXIT_SUCCESS;
 }
