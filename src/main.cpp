@@ -59,13 +59,13 @@ void updatePathViz() {
   auto pathQ = psMesh->addSurfaceGraphQuantity("path edges", edgeNetwork->getPathPolyline3D());
   pathQ->setEnabled(true);
   pathQ->setColor(polyscope::render::RGB_RED);
-  pathQ->setRadius(0.001);
+  pathQ->setRadius(0.01);
 
   if (vizAllIntrinsicEdges) {
     auto edgeQ = psMesh->addSurfaceGraphQuantity("intrinsic edges", edgeNetwork->getAllEdgePolyline3D());
     edgeQ->setEnabled(true);
     edgeQ->setColor(polyscope::render::RGB_ORANGE);
-    edgeQ->setRadius(0.0005);
+    edgeQ->setRadius(0.005);
   }
 
   { // Marked vertices
