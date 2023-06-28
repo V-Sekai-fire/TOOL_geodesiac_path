@@ -16,6 +16,10 @@ message(STATUS "cmake build type: ${CMAKE_BUILD_TYPE}")
 ### Configure the compiler
 # This is a basic, decent setup that should do something sane on most compilers
 
+if(MINGW)
+  set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++ ${CMAKE_EXE_LINKER_FLAGS}")
+endif()
+
 if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
 
   # using Clang (linux or apple) or GCC
