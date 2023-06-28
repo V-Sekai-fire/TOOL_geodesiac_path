@@ -30,11 +30,11 @@ std::unique_ptr<FlipEdgeNetwork> edgeNetwork;
 // UI parameters
 std::string loadedFilename = "";
 bool withGUI = true;
-bool iterativeShortenUseIterationCap = false;
-int iterativeShortenIterationCap = 1;
+bool iterativeShortenUseIterationCap = true;
+int iterativeShortenIterationCap = 4;
 bool straightenAtMarked = true;
-bool useIterativeShortenLengthLim = false;
-float iterativeShortenLengthLim = 0.5;
+bool useIterativeShortenLengthLim = true;
+float iterativeShortenLengthLim = 0.01;
 
 int nBezierIters = 3;
 
