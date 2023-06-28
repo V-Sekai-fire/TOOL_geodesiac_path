@@ -491,7 +491,6 @@ void buildFancyPathUI() {
   ImGui::Checkbox("Mark interior vertices", &fancyPathMarkVerts);
 }
 
-// A user-defined callback, for creating control panels (etc)
 void myCallback() {
 
   ImGui::TextUnformatted("Input");
@@ -512,19 +511,22 @@ void myCallback() {
       Vertex v = mesh->vertex(vIndex);
       fancyPathVerts.push_back(v);
       fancyPathVertsPs.emplace_back((size_t)vIndex, (int)fancyPathVertsPs.size());
-    }
 
-    edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
-                                                                      fancyPathMarkVerts);
-    if (edgeNetwork == nullptr) {
-      polyscope::warning("could not initialize fancy edge path between vertices");
-      return;
+      // Only construct the path if there are at least 3 vertices
+      if (fancyPathVerts.size() >= 3) {
+        edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
+                                                                          fancyPathMarkVerts);
+        if (edgeNetwork == nullptr) {
+          polyscope::warning("could not initialize fancy edge path between vertices");
+          return;
+        }
+        edgeNetwork->posGeom = geometry.get();
+        auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
+        updateFancyPathViz();
+        makeDelaunay();
+        delaunayRefine();
+      }
     }
-    edgeNetwork->posGeom = geometry.get();
-    auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
-    updateFancyPathViz();
-    makeDelaunay();
-    delaunayRefine();
   }
 
   if (ImGui::Button("Construct new Dijkstra path from endpoints")) {
