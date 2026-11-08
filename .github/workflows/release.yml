@@ -27,14 +27,13 @@ permissions:
 env:
   GH_TOKEN: ${{ github.token }}
   APP: flip_geodesics
-  # secrets.* is not allowed in a step's `if`; this env carries the answer.
-  HAVE_APPLE_SECRETS: ${{ secrets.APPLE_DEVID_P12 != '' }}
 
 jobs:
   tag:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      have_apple_secrets: ${{ steps.secrets.outputs.have_apple_secrets }}
     steps:
       - uses: actions/checkout@v4
       - name: Compute the release tag from the commit
@@ -49,6 +48,16 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Release tag: $tag" >> "$GITHUB_STEP_SUMMARY"
+      # secrets.* is not allowed directly in jobs.<id>.if; a job OUTPUT
+      # carries the answer instead (env.* at the workflow level is also
+      # not visible to jobs.<id>.if -- tried that first, GitHub rejected
+      # the whole workflow with "Unrecognized named-value: 'env'" at parse
+      # time, before any job even ran).
+      - name: Check whether the Apple signing secrets are configured
+        id: secrets
+        env:
+          HAVE: ${{ secrets.APPLE_DEVID_P12 != '' }}
+        run: echo "have_apple_secrets=$HAVE" >> "$GITHUB_OUTPUT"
 
   build-macos-app:
     needs: tag
@@ -98,9 +107,9 @@ jobs:
           if-no-files-found: error
 
   sign-notarize:
-    needs: build-macos-app
+    needs: [tag, build-macos-app]
     runs-on: ubuntu-latest
-    if: env.HAVE_APPLE_SECRETS == 'true'
+    if: needs.tag.outputs.have_apple_secrets == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -161,7 +170,7 @@ jobs:
         with:
           name: signed-app
       - name: Download the unsigned app (fallback)
-        if: hashFiles(format('{0}-signed.app.zip', env.APP)) == ''
+        if: hashFiles('flip_geodesics-signed.app.zip') == ''
         uses: actions/download-artifact@v4
         with:
           name: unsigned-app
