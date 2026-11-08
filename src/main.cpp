@@ -8,6 +8,9 @@
 #include "geometrycentral/utilities/timing.h"
 
 #include <sstream>
+#include <filesystem>
+#include <algorithm>
+#include <cctype>
 
 #include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
@@ -31,6 +34,10 @@ std::unique_ptr<FlipEdgeNetwork> edgeNetwork;
 
 // UI parameters
 std::string loadedFilename = "";
+// Set when no mesh loaded at startup (no file given, or it failed to
+// load) -- shown in the GUI instead of letting the app crash or exit
+// with nothing visible at all. See the crash-fix comment in main().
+std::string meshLoadError = "";
 bool withGUI = true;
 bool iterativeShortenUseIterationCap = true;
 int iterativeShortenIterationCap = 4;
@@ -493,6 +500,35 @@ void exportPathLines() {
 // between samples. --measure-loop-unsafe-shorten additionally reports
 // GEODESIC_LENGTH from iterativeShorten for comparison/debugging, with a
 // loud warning that it is known to collapse and must not be trusted yet.
+// Error code, not exception: checks the preconditions readManifoldSurfaceMesh
+// needs (geometry-central throws instead of returning an error code, and a
+// real crash report -- flip_geodesics-2026-11-08-100135.ips, SIGABRT via
+// __cxa_throw -> failed_throw -> std::terminate, readMeshFromFile() on the
+// stack -- showed nothing was catching it). Checking ourselves first, before
+// ever calling into geometry-central, means a bad path fails with our own
+// explicit, predictable error code instead of relying on catching whatever a
+// vendored library happens to throw. Returns "" if the file looks loadable,
+// else a human-readable reason.
+std::string checkMeshFileOrError(const std::string& path) {
+  if (path.empty()) {
+    return "no mesh file given";
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec) || ec) {
+    return "mesh file does not exist: '" + path + "'";
+  }
+  if (!std::filesystem::is_regular_file(path, ec) || ec) {
+    return "mesh path is not a regular file: '" + path + "'";
+  }
+  static const std::vector<std::string> supportedExt = {".obj", ".ply", ".off", ".stl"};
+  std::string ext = std::filesystem::path(path).extension().string();
+  for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (std::find(supportedExt.begin(), supportedExt.end(), ext) == supportedExt.end()) {
+    return "unsupported mesh file extension '" + ext + "' (supported: .obj, .ply, .off, .stl): '" + path + "'";
+  }
+  return "";
+}
+
 std::vector<Vertex> parseVertexList(ManifoldSurfaceMesh& m, const std::string& csv) {
   std::vector<Vertex> out;
   std::stringstream ss(csv);
@@ -512,6 +548,15 @@ std::vector<Vertex> parseVertexList(ManifoldSurfaceMesh& m, const std::string& c
 
 int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, const std::string& pathCSV,
                         double unitsScale, bool unsafeShorten) {
+  // Error code, not exception: check the precondition ourselves and fail
+  // explicitly before ever calling into geometry-central, rather than
+  // relying on catching whatever it throws. See checkMeshFileOrError()'s
+  // comment for why this matters (a real crash this avoided).
+  std::string err = checkMeshFileOrError(meshFile);
+  if (!err.empty()) {
+    std::cerr << "ERROR: " << err << std::endl;
+    return EXIT_FAILURE;
+  }
   std::unique_ptr<ManifoldSurfaceMesh> hMesh;
   std::unique_ptr<VertexPositionGeometry> hGeom;
   std::tie(hMesh, hGeom) = readManifoldSurfaceMesh(meshFile);
@@ -638,6 +683,11 @@ void buildFancyPathUI() {
 }
 
 void myCallback() {
+
+  if (!meshLoadError.empty()) {
+    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "%s", meshLoadError.c_str());
+    ImGui::Separator();
+  }
 
   ImGui::TextUnformatted("Input");
 
@@ -840,12 +890,15 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  if (!inputFilename) {
-    std::cerr << "Please specify a mesh file as argument" << std::endl;
-    return EXIT_FAILURE;
-  }
-
   if (measureLoopFlag || measurePathFlag) {
+    // These genuinely need a mesh file; the GUI path below does not --
+    // double-clicking the .app in Finder passes no arguments at all, and
+    // that case should open a window (with a clear message), not exit
+    // before one ever appears.
+    if (!inputFilename) {
+      std::cerr << "--measure-loop/--measure-path need a mesh file argument" << std::endl;
+      return EXIT_FAILURE;
+    }
     return runHeadlessMeasure(args::get(inputFilename), measureLoopFlag ? args::get(measureLoopFlag) : "",
                                measurePathFlag ? args::get(measurePathFlag) : "", args::get(unitsScaleFlag),
                                static_cast<bool>(unsafeShortenFlag));
@@ -854,11 +907,28 @@ int main(int argc, char** argv) {
   polyscope::init();
   polyscope::state::userCallback = myCallback;
 
+  // Error code, not exception: check the precondition ourselves (empty
+  // path, missing file, unsupported extension) and fail explicitly with
+  // our own message BEFORE ever calling into geometry-central, rather
+  // than relying on catching whatever it throws internally. This is also
+  // what makes a double-click with no mesh argument open a window with a
+  // message instead of exiting before one ever appears -- a no-path
+  // result from checkMeshFileOrError() is just "no mesh file given",
+  // handled the same way as any other precondition failure.
   loadedFilename = args::get(inputFilename);
-  std::tie(mesh, geometry) = readManifoldSurfaceMesh(loadedFilename);
+  meshLoadError = checkMeshFileOrError(loadedFilename);
+  if (meshLoadError.empty()) {
+    std::tie(mesh, geometry) = readManifoldSurfaceMesh(loadedFilename);
+  }
 
-  psMesh = polyscope::registerSurfaceMesh("input mesh", geometry->inputVertexPositions, mesh->getFaceVertexList(),
-                                          polyscopePermutations(*mesh));
+  if (mesh != nullptr) {
+    psMesh = polyscope::registerSurfaceMesh("input mesh", geometry->inputVertexPositions, mesh->getFaceVertexList(),
+                                            polyscopePermutations(*mesh));
+  }
+  // No window is strictly worse than a window saying what went wrong:
+  // polyscope::show() still runs even with mesh == nullptr (no file
+  // given, or the precondition check failed) -- myCallback() shows
+  // meshLoadError.
 
   polyscope::show();
 
