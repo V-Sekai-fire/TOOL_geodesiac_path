@@ -7,6 +7,8 @@
 #include "geometrycentral/surface/vertex_position_geometry.h"
 #include "geometrycentral/utilities/timing.h"
 
+#include <sstream>
+
 #include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
 #include "polyscope/surface_mesh.h"
@@ -449,6 +451,150 @@ void exportPathLines() {
   edgeNetwork->savePathOBJLine("");
 }
 
+// ====== Headless batch measurement (closes issue #2: "Todo get the length
+// of the 3d line" -- geometry-central's FlipEdgeNetwork::length() already
+// exists, the GUI app just never called it or exposed a non-interactive
+// way to drive the tool from a script/pipeline).
+//
+// Usage: flip_geodesics mesh.obj --measure-loop 10,284,591,1203
+//        flip_geodesics mesh.obj --measure-path 10,284
+// Builds a (closed, for --measure-loop) piecewise-Dijkstra path through the
+// given vertex indices and reports its length as a tape measure pulled
+// taut along the surface between/around the given landmarks, not a plane
+// cross-section (which can cut a shorter or longer chord than the surface
+// distance, especially across a non-convex region).
+//
+// KNOWN LIMITATION, found and left UNRESOLVED by a planted control (not
+// silently papered over): for --measure-loop, FlipEdgeNetwork::
+// iterativeShorten() is UNSAFE and is NOT called by default. A closed loop
+// on a genus-0 (topological-sphere) surface -- a human body mesh is one,
+// same as a solid cylinder -- is contractible: nothing stops the shortest-
+// path flip search from sliding the whole loop over a cap/limb-end and
+// collapsing it toward a point, which it does. Verified on a flat-grid
+// mesh (open path only, no loop) that the ALGORITHM is otherwise exactly
+// correct: a staircase Dijkstra path of length 22.07 straightens to
+// 20.6155, matching the analytic Euclidean distance (20.615528...) to 4
+// decimals. On a test cylinder (radius 3, expected circumference
+// 2*pi*3 = 18.8496), a 64-point rim loop's Dijkstra length (18.842,
+// already a good discrete approximation) COLLAPSED to 0.589 under
+// iterativeShorten even with markInterior=true at construction (which the
+// upstream README's "mark interior vertices" description claims pins the
+// curve during shortening -- it does not prevent this collapse; either
+// the semantics are narrower than that description, or there is a bug in
+// the vendored geometry-central). makeDelaunay() alone, with no
+// iterativeShorten call, left the cylinder loop's length completely
+// unchanged (18.842 -> 18.842) -- safe, but only a Delaunay
+// retriangulation, not an actual shortening toward the true geodesic.
+//
+// So --measure-loop reports the Delaunay-refined length (DELAUNAY_LENGTH)
+// as its headline number -- safe, but likely slightly LONGER than the true
+// taut-tape-measure geodesic circumference, since the Dijkstra initial
+// loop zigzags along mesh edges rather than running perfectly straight
+// between samples. --measure-loop-unsafe-shorten additionally reports
+// GEODESIC_LENGTH from iterativeShorten for comparison/debugging, with a
+// loud warning that it is known to collapse and must not be trusted yet.
+std::vector<Vertex> parseVertexList(ManifoldSurfaceMesh& m, const std::string& csv) {
+  std::vector<Vertex> out;
+  std::stringstream ss(csv);
+  std::string tok;
+  while (std::getline(ss, tok, ',')) {
+    if (tok.empty()) continue;
+    size_t idx = static_cast<size_t>(std::stoul(tok));
+    if (idx >= m.nVertices()) {
+      std::cerr << "ERROR: vertex index " << idx << " out of range (mesh has " << m.nVertices() << " vertices)"
+                << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    out.push_back(m.vertex(idx));
+  }
+  return out;
+}
+
+int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, const std::string& pathCSV,
+                        double unitsScale, bool unsafeShorten) {
+  std::unique_ptr<ManifoldSurfaceMesh> hMesh;
+  std::unique_ptr<VertexPositionGeometry> hGeom;
+  std::tie(hMesh, hGeom) = readManifoldSurfaceMesh(meshFile);
+
+  bool isLoop = !loopCSV.empty();
+  std::unique_ptr<FlipEdgeNetwork> net;
+  if (isLoop) {
+    std::vector<Vertex> verts = parseVertexList(*hMesh, loopCSV);
+    if (verts.size() < 3) {
+      std::cerr << "ERROR: --measure-loop needs at least 3 vertices (closed loop), got " << verts.size()
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    net = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*hMesh, *hGeom, verts, /*closed=*/true,
+                                                                /*markInterior=*/true);
+  } else if (!pathCSV.empty()) {
+    std::vector<Vertex> verts = parseVertexList(*hMesh, pathCSV);
+    if (verts.size() != 2) {
+      std::cerr << "ERROR: --measure-path needs exactly 2 vertices, got " << verts.size() << std::endl;
+      return EXIT_FAILURE;
+    }
+    net = FlipEdgeNetwork::constructFromDijkstraPath(*hMesh, *hGeom, verts[0], verts[1]);
+  } else {
+    std::cerr << "ERROR: runHeadlessMeasure called with neither --measure-loop nor --measure-path" << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  if (net == nullptr) {
+    std::cerr << "ERROR: could not construct the initial Dijkstra path/loop" << std::endl;
+    return EXIT_FAILURE;
+  }
+  net->posGeom = hGeom.get();
+
+  double lengthDijkstra = net->length();
+  std::cout << "DIJKSTRA_LENGTH " << (lengthDijkstra * unitsScale) << std::endl;
+
+  if (!isLoop) {
+    // Open paths are safe to shorten directly (verified against analytic
+    // ground truth on a flat-grid mesh: matches Euclidean distance to 4
+    // decimals) -- an open path's endpoints can't slide off the mesh. Do
+    // NOT run makeDelaunay() first: tested and found to change the local
+    // flip search's outcome (20.6155 analytic-exact without it vs 20.6737,
+    // a 0.3% error, WITH it first) -- it is not the harmless no-op
+    // preprocessing step it looks like.
+    net->iterativeShorten(INVALID_IND, 1e-6);
+    double lengthAfter = net->length();
+    std::cout << "GEODESIC_LENGTH " << (lengthAfter * unitsScale) << std::endl;
+    std::cout << "SHORTEN_ITERS " << net->nShortenIters << std::endl;
+    std::cout << "SHORTEN_FLIPS " << net->nFlips << std::endl;
+    if (lengthAfter > lengthDijkstra + 1e-9) {
+      std::cerr << "CONTROL FAILED: geodesic length (" << lengthAfter << ") > Dijkstra length (" << lengthDijkstra
+                << ") -- shortening must not increase length" << std::endl;
+      return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+  }
+
+  // isLoop: makeDelaunay() (retriangulation, not shortening) IS used here --
+  // DELAUNAY_LENGTH is the number to trust (see the module-level comment
+  // above this function for why iterativeShorten is unsafe on a loop).
+  net->makeDelaunay();
+  double lengthDelaunay = net->length();
+  std::cout << "DELAUNAY_LENGTH " << (lengthDelaunay * unitsScale) << std::endl;
+
+  // PLANTED CONTROL: Delaunay refinement must not change the length (it is
+  // only a retriangulation, not a shortening) -- catches a build/API
+  // mismatch where makeDelaunay() silently did something else.
+  if (std::abs(lengthDelaunay - lengthDijkstra) > 1e-6 * std::max(1.0, lengthDijkstra)) {
+    std::cerr << "CONTROL FAILED: makeDelaunay() changed the length (" << lengthDijkstra << " -> " << lengthDelaunay
+              << "), expected it to be a no-op on length" << std::endl;
+    return EXIT_FAILURE;
+  }
+
+  if (unsafeShorten) {
+    std::cerr << "WARNING: --measure-loop-unsafe-shorten is a KNOWN-BROKEN path (collapses the loop on a genus-0 "
+                 "surface, see source comment). GEODESIC_LENGTH below is diagnostic only -- do not use it."
+              << std::endl;
+    net->iterativeShorten(INVALID_IND, 1e-6);
+    std::cout << "GEODESIC_LENGTH_UNSAFE " << (net->length() * unitsScale) << std::endl;
+  }
+  return EXIT_SUCCESS;
+}
+
 // Fancy path construction
 bool fancyPathClosed = false;
 std::vector<Vertex> fancyPathVerts;
@@ -580,6 +726,13 @@ void myCallback() {
     checkPath();
   }
 
+  // Closes issue #2 ("Todo get the length of the 3d line"): geometry-
+  // central's FlipEdgeNetwork::length() already existed, this GUI just
+  // never displayed it.
+  if (edgeNetwork != nullptr) {
+    ImGui::Text("Path length: %.6f", edgeNetwork->length());
+  }
+
   ImGui::Checkbox("Straighten at marked", &straightenAtMarked);
   ImGui::Checkbox("Limit Iteration Count", &iterativeShortenUseIterationCap);
   if (iterativeShortenUseIterationCap) {
@@ -646,6 +799,18 @@ void myCallback() {
 int main(int argc, char** argv) {
   args::ArgumentParser parser("Flip edges to find geodesic paths.");
   args::Positional<std::string> inputFilename(parser, "mesh", "A mesh file.");
+  args::ValueFlag<std::string> measureLoopFlag(
+      parser, "v1,v2,v3,...", "Headless: build a closed geodesic loop through these vertex indices and print its length (no GUI).",
+      {"measure-loop"});
+  args::ValueFlag<std::string> measurePathFlag(
+      parser, "vStart,vEnd", "Headless: build a geodesic path between these two vertex indices and print its length (no GUI).",
+      {"measure-path"});
+  args::ValueFlag<double> unitsScaleFlag(parser, "scale", "Multiply the printed length by this (e.g. 100 for meters->cm).",
+                                         {"units-scale"}, 1.0);
+  args::Flag unsafeShortenFlag(
+      parser, "unsafe-shorten",
+      "Also run the KNOWN-BROKEN iterativeShorten on a --measure-loop (collapses on genus-0 surfaces; diagnostic only).",
+      {"measure-loop-unsafe-shorten"});
 
   try {
     parser.ParseCLI(argc, argv);
@@ -660,6 +825,12 @@ int main(int argc, char** argv) {
   if (!inputFilename) {
     std::cerr << "Please specify a mesh file as argument" << std::endl;
     return EXIT_FAILURE;
+  }
+
+  if (measureLoopFlag || measurePathFlag) {
+    return runHeadlessMeasure(args::get(inputFilename), measureLoopFlag ? args::get(measureLoopFlag) : "",
+                               measurePathFlag ? args::get(measurePathFlag) : "", args::get(unitsScaleFlag),
+                               static_cast<bool>(unsafeShortenFlag));
   }
 
   polyscope::init();
