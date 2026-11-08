@@ -210,11 +210,29 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: dmg
+      # github.token (used by `gh` by default) deliberately does NOT
+      # trigger OTHER workflow runs -- a GitHub anti-recursion rule. The
+      # first version of this job used it directly and the release it
+      # created never triggered main.yml's own `on: release: published`
+      # job, which builds and attaches the Linux/Windows/macOS zips --
+      # confirmed: that release ended up with ONLY the DMG as an asset.
+      # Minting an installation token from the org's persona GitHub App
+      # (same pattern entities-model-explorer already uses) makes the
+      # release-create act as the App, which DOES trigger main.yml.
+      - name: Mint a GitHub App token so release creation triggers main.yml
+        id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.PERSONA_APP_ID }}
+          private-key: ${{ secrets.PERSONA_APP_PRIVATE_KEY }}
+          owner: V-Sekai-fire
+          repositories: TOOL_geodesiac_path
       - name: Create tag and release, attach the DMG
         env:
           TAG: ${{ needs.tag.outputs.tag }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -eu
           git tag "$TAG"
           git push origin "$TAG"
-          gh release create "$TAG" --title "$TAG" --notes "Signed+notarized macOS .app DMG, built by release.yml. Tag is the Go pseudo-version of this commit (RFD66606-2312)." *.dmg
+          gh release create "$TAG" --title "$TAG" --notes "Signed+notarized macOS .app DMG (this workflow) plus Linux/Windows/macOS zips (main.yml, triggered by this release). Tag is the Go pseudo-version of this commit (RFD66606-2312)." *.dmg
