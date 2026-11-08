@@ -57,25 +57,37 @@ jobs:
       - name: Create Zip File (Windows)
         run: |
           cd build
-          powershell Compress-Archive -Path bin/* -DestinationPath bin.zip
+          powershell Compress-Archive -Path bin/* -DestinationPath flip_geodesics-windows.zip
         if: runner.os == 'Windows'
 
-      - name: Create Zip File (Linux and macOS)
+      - name: Create Zip File (Linux)
         run: |
           cd build
-          zip -r bin.zip bin/
-        if: runner.os != 'Windows'
+          zip -r flip_geodesics-linux.zip bin/
+        if: runner.os == 'Linux'
+
+      - name: Create Zip File (macOS)
+        run: |
+          cd build
+          zip -r flip_geodesics-macos.zip bin/
+        if: runner.os == 'macOS'
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: build-bin-${{ runner.os }}
-          path: build/bin.zip
+          path: build/flip_geodesics-*.zip
 
       - name: Upload Release Asset
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v1
         with:
-          files: build/bin.zip
+          # One release-asset filename per OS (flip_geodesics-<os>.zip) --
+          # all three matrix jobs previously uploaded a file literally
+          # named "bin.zip" to the SAME release, silently clobbering each
+          # other so only one platform's binary actually survived
+          # (confirmed on the v0.1.0 release: 3/3 jobs reported success,
+          # but only one "bin.zip" asset existed afterward).
+          files: build/flip_geodesics-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
