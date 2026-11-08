@@ -1,0 +1,211 @@
+name: Release (signed macOS .app + DMG)
+
+# Run it (workflow_dispatch) on the commit to release. The tag is computed
+# from the commit, never typed (RFD66606-2312, "release tags are go
+# pseudo-versions"): v0.0.0-<UTC committer time YYYYMMDDhhmmss>-<12 hex>.
+#
+#   gh workflow run release.yml -R V-Sekai-fire/TOOL_geodesiac_path
+#
+# The macOS .app is signed (Developer ID, hardened runtime) and notarized
+# with rcodesign (indygreg/apple-platform-rs) on a Linux runner -- no
+# Xcode, no macOS-side Keychain/Touch-ID interaction, matching the pattern
+# already proven in V-Sekai-fire/entities-model-explorer's release.yml.
+# Org Actions secrets (visibility "selected", added to this repo's list
+# alongside entities-model-explorer; values come from OpenBao via
+# `gh secret set --org V-Sekai-fire --repos ...`):
+#   APPLE_DEVID_P12, APPLE_DEVID_P12_PASSWORD   "Developer ID Application" cert+key as .p12
+#   APPLE_NOTARY_KEY_P8, APPLE_NOTARY_KEY_ID, APPLE_NOTARY_ISSUER_ID   App Store Connect API key
+# When the Apple secrets are absent (e.g. a run from a fork), the macOS
+# .app ships unsigned inside the DMG and the step says so -- it does not
+# silently skip packaging.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  APP: flip_geodesics
+  # secrets.* is not allowed in a step's `if`; this env carries the answer.
+  HAVE_APPLE_SECRETS: ${{ secrets.APPLE_DEVID_P12 != '' }}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute the release tag from the commit
+        id: tag
+        run: |
+          set -eu
+          tag=$(TZ=UTC git log -1 --format='v0.0.0-%cd-%h' --date=format-local:%Y%m%d%H%M%S --abbrev=12)
+          echo "$tag" | grep -Eq '^v0\.0\.0-[0-9]{14}-[0-9a-f]{12}$' || { echo "bad tag $tag"; exit 1; }
+          if git fetch -q origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null; then
+            at=$(git rev-list -n1 "$tag")
+            [ "$at" = "$GITHUB_SHA" ] || { echo "tag $tag already points at $at, not $GITHUB_SHA"; exit 1; }
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag" >> "$GITHUB_STEP_SUMMARY"
+
+  build-macos-app:
+    needs: tag
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Build
+        run: |
+          mkdir build && cd build
+          cmake .. -GNinja
+          ninja
+      - name: Smoke test against analytic ground truth
+        run: bash test_assets/smoke_test.sh build/bin/flip_geodesics
+      - name: Bundle the .app (unsigned at this step)
+        run: |
+          set -eu
+          APPDIR="build/$APP.app"
+          mkdir -p "$APPDIR/Contents/MacOS" "$APPDIR/Contents/Resources"
+          cp "build/bin/$APP" "$APPDIR/Contents/MacOS/$APP"
+          cat > "$APPDIR/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>$APP</string>
+            <key>CFBundleIdentifier</key><string>net.vsekai.tool-geodesiac-path</string>
+            <key>CFBundleName</key><string>$APP</string>
+            <key>CFBundleDisplayName</key><string>Flip Geodesics</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${{ needs.tag.outputs.tag }}</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          printf 'APPL????' > "$APPDIR/Contents/PkgInfo"
+          (cd build && zip -qry "$APP-unsigned.app.zip" "$APP.app")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-app
+          path: build/${{ env.APP }}-unsigned.app.zip
+          if-no-files-found: error
+
+  sign-notarize:
+    needs: build-macos-app
+    runs-on: ubuntu-latest
+    if: env.HAVE_APPLE_SECRETS == 'true'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-app
+      - name: Sign and notarize the .app (rcodesign)
+        env:
+          APPLE_DEVID_P12: ${{ secrets.APPLE_DEVID_P12 }}
+          APPLE_DEVID_P12_PASSWORD: ${{ secrets.APPLE_DEVID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          CODE_SIGN_VERSION: "0.29.0"
+          CODE_SIGN_SHA256: "dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002"
+        run: |
+          set -eu
+          umask 077
+          S="$RUNNER_TEMP/sign"; mkdir -p "$S/bin" "$S/pkg"
+          a="apple-codesign-$CODE_SIGN_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$S/$a" "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F$CODE_SIGN_VERSION/$a"
+          echo "$CODE_SIGN_SHA256  $S/$a" | sha256sum -c
+          tar -xzf "$S/$a" -C "$S/bin" --strip-components=1
+          RC="$S/bin/rcodesign"; "$RC" --version
+          printf '%s' "$APPLE_DEVID_P12" | base64 -d > "$S/devid.p12"
+          printf '%s' "$APPLE_DEVID_P12_PASSWORD" > "$S/p12.pw"
+          printf '%s\n' "$APPLE_NOTARY_KEY_P8" > "$S/AuthKey.p8"
+          "$RC" encode-app-store-connect-api-key -o "$S/notary.json" "$APPLE_NOTARY_ISSUER_ID" "$APPLE_NOTARY_KEY_ID" "$S/AuthKey.p8"
+          unzip -q "$APP-unsigned.app.zip" -d "$S/pkg"
+          app="$S/pkg/$APP.app"
+          "$RC" sign --p12-file "$S/devid.p12" --p12-password-file "$S/p12.pw" --for-notarization --code-signature-flags runtime "$app"
+          "$RC" verify "$app/Contents/MacOS/$APP"
+          # Submit the signed .app DIRECTORY, not a zip of it: rcodesign's
+          # notarize_path() builds its own Apple-compatible zip internally
+          # (preserving exec bits/symlinks), which a plain `zip` re-pack
+          # does not reliably do and can trip "signature of the binary is
+          # invalid" on Apple's side. --staple attaches the ticket to the
+          # .app so the DMG built from it carries a working offline ticket.
+          "$RC" notary-submit --api-key-file "$S/notary.json" --wait --max-wait-seconds 1500 --staple "$app"
+          (cd "$S/pkg" && zip -qry "$GITHUB_WORKSPACE/$APP-signed.app.zip" "$APP.app")
+          rm -rf "$S/devid.p12" "$S/p12.pw" "$S/AuthKey.p8" "$S/notary.json"
+          echo "macOS .app signed as Developer ID and notarized" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-app
+          path: ${{ env.APP }}-signed.app.zip
+          if-no-files-found: error
+
+  dmg:
+    needs: [tag, build-macos-app, sign-notarize]
+    runs-on: macos-latest
+    # Always runs: if sign-notarize was skipped (no Apple secrets), falls
+    # back to the unsigned .app so the DMG still gets built and published,
+    # clearly labelled as unsigned.
+    if: always() && needs.build-macos-app.result == 'success'
+    steps:
+      - name: Download the signed app (if it exists)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: signed-app
+      - name: Download the unsigned app (fallback)
+        if: hashFiles(format('{0}-signed.app.zip', env.APP)) == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: unsigned-app
+      - name: Build the DMG
+        run: |
+          set -eu
+          TAG="${{ needs.tag.outputs.tag }}"
+          if [ -f "$APP-signed.app.zip" ]; then
+            SRC="$APP-signed.app.zip"; SIGNED=1
+          else
+            SRC="$APP-unsigned.app.zip"; SIGNED=0
+          fi
+          mkdir -p dmgroot
+          unzip -q "$SRC" -d dmgroot
+          DMG="$APP-$TAG-macos.dmg"
+          hdiutil create -volname "Flip Geodesics" -srcfolder dmgroot -ov -format UDZO "$DMG"
+          echo "signed=$SIGNED" >> "$GITHUB_ENV"
+          echo "dmg=$DMG" >> "$GITHUB_ENV"
+          if [ "$SIGNED" = "1" ]; then
+            echo "DMG built from the signed+notarized .app" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "WARNING: DMG built from an UNSIGNED .app (no Apple secrets available on this run)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg
+          path: ${{ env.dmg }}
+          if-no-files-found: error
+
+  publish:
+    needs: [tag, dmg]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dmg
+      - name: Create tag and release, attach the DMG
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          set -eu
+          git tag "$TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --notes "Signed+notarized macOS .app DMG, built by release.yml. Tag is the Go pseudo-version of this commit (RFD66606-2312)." *.dmg
