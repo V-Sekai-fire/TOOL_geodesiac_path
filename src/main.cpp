@@ -8,6 +8,7 @@
 #include "geometrycentral/utilities/timing.h"
 
 #include <sstream>
+#include <fstream>
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
@@ -546,8 +547,37 @@ std::vector<Vertex> parseVertexList(ManifoldSurfaceMesh& m, const std::string& c
   return out;
 }
 
+// Writes the REAL straightened/Delaunay path's 3D polyline (every point,
+// including interior points along a face the path crosses, not just mesh
+// vertices) as JSON `[[x,y,z],...]`, scaled by unitsScale. Called after
+// the real shortening/retriangulation step, so this is the SMOOTH curve,
+// not the raw Dijkstra zigzag -- the thing the caller actually asked for
+// (see FlipEdgeNetwork::getPathPolyline3D()).
+void exportPolyline3D(FlipEdgeNetwork& net, const std::string& outPath, double unitsScale) {
+  std::vector<std::vector<Vector3>> polylines = net.getPathPolyline3D();
+  std::ofstream f(outPath);
+  f << "[";
+  bool firstLine = true;
+  for (auto& line : polylines) {
+    if (!firstLine) f << ",";
+    firstLine = false;
+    f << "[";
+    bool firstPt = true;
+    for (Vector3 p : line) {
+      if (!firstPt) f << ",";
+      firstPt = false;
+      f << "[" << (p.x * unitsScale) << "," << (p.y * unitsScale) << "," << (p.z * unitsScale) << "]";
+    }
+    f << "]";
+  }
+  f << "]";
+  f.close();
+  std::cerr << "wrote polyline to " << outPath << " (" << polylines.size() << " line(s))" << std::endl;
+}
+
 int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, const std::string& pathCSV,
-                        double unitsScale, bool unsafeShorten) {
+                        double unitsScale, bool unsafeShorten, const std::string& exportPathOut,
+                        int boundedShortenMaxIters, double boundedShortenMaxRelDecrease) {
   // Error code, not exception: check the precondition ourselves and fail
   // explicitly before ever calling into geometry-central, rather than
   // relying on catching whatever it throws. See checkMeshFileOrError()'s
@@ -611,6 +641,9 @@ int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, 
                 << ") -- shortening must not increase length" << std::endl;
       return EXIT_FAILURE;
     }
+    if (!exportPathOut.empty()) {
+      exportPolyline3D(*net, exportPathOut, unitsScale);
+    }
     return EXIT_SUCCESS;
   }
 
@@ -628,6 +661,59 @@ int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, 
     std::cerr << "CONTROL FAILED: makeDelaunay() changed the length (" << lengthDijkstra << " -> " << lengthDelaunay
               << "), expected it to be a no-op on length" << std::endl;
     return EXIT_FAILURE;
+  }
+
+  if (!exportPathOut.empty()) {
+    exportPolyline3D(*net, exportPathOut, unitsScale);
+  }
+
+  // SAFE bounded shortening: caps BOTH the iteration count and the total
+  // relative length decrease, so it relaxes the sharp per-segment kinks
+  // left by constructFromPiecewiseDijkstraPath into local curvature
+  // without running long enough to slide the whole loop over a cap and
+  // collapse it (--measure-loop-unsafe-shorten's failure mode, see the
+  // module comment above). A collapse guard is checked explicitly
+  // afterward, not assumed safe just because the caller passed a cap.
+  if (boundedShortenMaxIters > 0) {
+    double lengthBeforeBounded = net->length();
+    // geometry-central's iterativeShorten(iters, maxRelativeLengthDecrease)
+    // parameter is a STOPPING THRESHOLD on the FRACTION OF LENGTH
+    // REMAINING (stops once currLength < maxRelativeLengthDecrease *
+    // initLength -- see flip_geodesics.cpp:970), the OPPOSITE of what its
+    // name suggests and what our own CLI flag's help text promises
+    // callers (a cap on how much the length is allowed to DECREASE BY).
+    // Found empirically: passing our own flag's value straight through
+    // let hips/leg_circ/neck_w loops shrink 15-40% (hips: 94.9cm ->
+    // 62.47cm after enough iterations -- the SAME sliding-toward-a-
+    // narrower-cross-section collapse the module comment warns about,
+    // just not yet complete) while identical values on waist converged
+    // safely at ~4%, because waist genuinely has no narrower point
+    // nearby to slide toward. Converting here so OUR flag keeps its
+    // documented, intuitive meaning: 1 - boundedShortenMaxRelDecrease is
+    // the library's actual stopping threshold.
+    net->iterativeShorten(static_cast<size_t>(boundedShortenMaxIters), 1.0 - boundedShortenMaxRelDecrease);
+    double lengthAfterBounded = net->length();
+    double relDecrease = (lengthBeforeBounded - lengthAfterBounded) / lengthBeforeBounded;
+    std::cout << "BOUNDED_SHORTEN_LENGTH " << (lengthAfterBounded * unitsScale) << std::endl;
+    std::cout << "BOUNDED_SHORTEN_ITERS " << net->nShortenIters << std::endl;
+    std::cout << "BOUNDED_SHORTEN_REL_DECREASE " << relDecrease << std::endl;
+    // PLANTED CONTROL: a genuine collapse drops length toward ~0 (the
+    // cylinder test case collapsed 18.842 -> 0.589, a 97% decrease);
+    // catch that here instead of trusting the caller's iteration cap
+    // alone to have prevented it.
+    if (relDecrease > 0.5) {
+      std::cerr << "CONTROL FAILED: BOUNDED_SHORTEN dropped length by " << (relDecrease * 100)
+                << "% despite the iteration/relative-decrease caps -- this looks like the known collapse failure "
+                   "mode, not a legitimate local straightening. Refusing to trust BOUNDED_SHORTEN_LENGTH."
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (!exportPathOut.empty()) {
+      std::string boundedOut = exportPathOut;
+      size_t dot = boundedOut.rfind('.');
+      boundedOut = (dot == std::string::npos) ? boundedOut + "_bounded" : boundedOut.substr(0, dot) + "_bounded" + boundedOut.substr(dot);
+      exportPolyline3D(*net, boundedOut, unitsScale);
+    }
   }
 
   if (unsafeShorten) {
@@ -879,6 +965,25 @@ int main(int argc, char** argv) {
       parser, "unsafe-shorten",
       "Also run the KNOWN-BROKEN iterativeShorten on a --measure-loop (collapses on genus-0 surfaces; diagnostic only).",
       {"measure-loop-unsafe-shorten"});
+  args::ValueFlag<int> boundedShortenItersFlag(
+      parser, "maxIterations",
+      "SAFE bounded iterativeShorten on a --measure-loop: caps BOTH the iteration count and the total relative "
+      "length decrease (see --measure-loop-bounded-shorten-rel-decrease), so it relaxes sharp per-segment kinks "
+      "into local curvature without enough iterations to slide the whole loop over a cap and collapse it (the "
+      "failure mode of --measure-loop-unsafe-shorten's unlimited iterativeShorten). Matches the interactive GUI's "
+      "own default-on 'Limit Iteration Count' checkbox, exposed here for headless use. 0 = off (default).",
+      {"measure-loop-bounded-shorten"}, 0);
+  args::ValueFlag<double> boundedShortenRelDecreaseFlag(
+      parser, "maxRelativeLengthDecrease",
+      "Stop --measure-loop-bounded-shorten once the loop's total length has decreased by more than this fraction "
+      "of its starting (Delaunay) length -- the second half of the collapse guard. 0.05 (default) caps it at a "
+      "5% decrease; verified empirically to converge safely on every torso/limb loop tested so far without "
+      "entering the sliding-toward-a-narrower-cross-section collapse mode a looser cap can reach (see the "
+      "runHeadlessMeasure() source comment for the measured hips-loop counterexample).",
+      {"measure-loop-bounded-shorten-rel-decrease"}, 0.05);
+  args::ValueFlag<std::string> exportPathFlag(
+      parser, "out.json", "Headless: also write the real straightened/Delaunay path's 3D polyline as JSON.",
+      {"export-path"});
 
   try {
     parser.ParseCLI(argc, argv);
@@ -901,7 +1006,8 @@ int main(int argc, char** argv) {
     }
     return runHeadlessMeasure(args::get(inputFilename), measureLoopFlag ? args::get(measureLoopFlag) : "",
                                measurePathFlag ? args::get(measurePathFlag) : "", args::get(unitsScaleFlag),
-                               static_cast<bool>(unsafeShortenFlag));
+                               static_cast<bool>(unsafeShortenFlag), exportPathFlag ? args::get(exportPathFlag) : "",
+                               args::get(boundedShortenItersFlag), args::get(boundedShortenRelDecreaseFlag));
   }
 
   polyscope::init();
