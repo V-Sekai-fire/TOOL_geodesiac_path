@@ -54,6 +54,15 @@ jobs:
           cd build
           ninja
 
+      - name: Smoke test against analytic ground truth (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: bash test_assets/smoke_test.sh build/bin/flip_geodesics
+
+      - name: Smoke test against analytic ground truth (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash test_assets/smoke_test.sh build/bin/flip_geodesics.exe
+
       - name: Create Zip File (Windows)
         run: |
           cd build

@@ -653,13 +653,33 @@ void myCallback() {
       if (vIndex == -1) { // User cancelled the selection
         break;
       }
-      
+
       Vertex v = mesh->vertex(vIndex);
       fancyPathVerts.push_back(v);
       fancyPathVertsPs.emplace_back((size_t)vIndex, (int)fancyPathVertsPs.size());
 
-      // Only construct the path if there are at least 3 vertices
-      if (fancyPathVerts.size() >= 3) {
+      // Closes issue #3 ("Immediate Feedback for Point Placement in
+      // UI/UX"): previously this marker update and the Dijkstra preview
+      // path were both gated behind "at least 3 vertices", so clicking
+      // point 1 or point 2 showed NOTHING on screen -- no marker, no
+      // line, no feedback at all until the 3rd click. Markers now update
+      // after every single click.
+      auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
+      updateFancyPathViz();
+
+      if (fancyPathVerts.size() == 2) {
+        // Live preview of the first leg as an OPEN path (not yet closed --
+        // closing a 2-point "loop" is degenerate) so the user sees a line
+        // connecting their first two clicks immediately, instead of
+        // waiting for a 3rd click with no visual confirmation the first
+        // two landed where intended.
+        edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts,
+                                                                          /*closed=*/false, fancyPathMarkVerts);
+        if (edgeNetwork != nullptr) {
+          edgeNetwork->posGeom = geometry.get();
+          updatePathViz();
+        }
+      } else if (fancyPathVerts.size() >= 3) {
         edgeNetwork = FlipEdgeNetwork::constructFromPiecewiseDijkstraPath(*mesh, *geometry, fancyPathVerts, fancyPathClosed,
                                                                           fancyPathMarkVerts);
         if (edgeNetwork == nullptr) {
@@ -667,8 +687,6 @@ void myCallback() {
           return;
         }
         edgeNetwork->posGeom = geometry.get();
-        auto updateFancyPathViz = [&]() { psMesh->addVertexCountQuantity("fancy path vertices", fancyPathVertsPs); };
-        updateFancyPathViz();
         makeDelaunay();
         delaunayRefine();
       }
