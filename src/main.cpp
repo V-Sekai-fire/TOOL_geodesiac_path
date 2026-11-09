@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 #include "polyscope/point_cloud.h"
 #include "polyscope/polyscope.h"
@@ -575,9 +576,97 @@ void exportPolyline3D(FlipEdgeNetwork& net, const std::string& outPath, double u
   std::cerr << "wrote polyline to " << outPath << " (" << polylines.size() << " line(s))" << std::endl;
 }
 
+// Largest turning angle (degrees) between consecutive segments of a
+// CLOSED polyline, treating the last point as connecting back to the
+// first. Mesh-size- and loop-length-INDEPENDENT (an angle, not a
+// distance), which is why it is the adaptive stopping criterion below
+// instead of an iteration count or a length-decrease fraction: those
+// two are tuned to one specific mesh's loop sizes and do not transfer
+// to a different ANNY phenotype or a wholly custom model (iFire: "it
+// has to work for possible anny and custom models so you can't hard
+// code").
+double maxClosedLoopTurningAngleDeg(FlipEdgeNetwork& net) {
+  std::vector<std::vector<Vector3>> polylines = net.getPathPolyline3D();
+  double maxAngle = 0.0;
+  for (auto& line : polylines) {
+    size_t n = line.size();
+    if (n < 3) continue;
+    for (size_t i = 0; i < n; i++) {
+      Vector3 prev = line[(i + n - 1) % n];
+      Vector3 curr = line[i];
+      Vector3 next = line[(i + 1) % n];
+      Vector3 segIn = unit(curr - prev);
+      Vector3 segOut = unit(next - curr);
+      double cosAngle = std::clamp(dot(segIn, segOut), -1.0, 1.0);
+      double angleDeg = std::acos(cosAngle) * 180.0 / M_PI;
+      maxAngle = std::max(maxAngle, angleDeg);
+    }
+  }
+  return maxAngle;
+}
+
+// Adaptive, mesh-size-independent loop smoothing: run iterativeShorten
+// ONE step at a time (checkLength disabled per-step; 0.0 means "off",
+// see geometry-central's flip_geodesics.cpp), re-measuring the max
+// turning angle after each step, and stop as soon as it drops to or
+// below targetMaxTurnDeg -- a real geometric smoothness criterion, not
+// an arbitrary count empirically tuned against one mesh's loops (which
+// is what a fixed --measure-loop-bounded-shorten=N does, and why that
+// flag stays around only as a manual-override escape hatch, not the
+// default path). hardMaxIterations and hardMaxRelDecrease are SAFETY
+// nets only (independent of mesh scale: iteration counts cap runtime,
+// the relative-decrease fraction catches the known sliding-toward-a-
+// narrower-cross-section collapse failure, see the module comment
+// above) -- they stop the loop early if the angle target is never
+// reached, they do not define "done".
+struct AdaptiveShortenResult {
+  size_t iterations;
+  double finalMaxTurnDeg;
+  double finalRelDecrease;
+  bool hitAngleTarget;
+  bool hitRelDecreaseCap;
+  bool hitIterationCap;
+  bool converged; // wedgeAngleQueue emptied naturally -- no more local flips exist
+};
+
+AdaptiveShortenResult adaptiveShortenToAngle(FlipEdgeNetwork& net, double targetMaxTurnDeg,
+                                              size_t hardMaxIterations, double hardMaxRelDecrease) {
+  double initLength = net.length();
+  size_t iterations = 0;
+  double maxTurn = maxClosedLoopTurningAngleDeg(net);
+  bool hitRelDecreaseCap = false;
+  bool converged = false;
+  while (maxTurn > targetMaxTurnDeg && iterations < hardMaxIterations) {
+    double lengthBefore = net.length();
+    net.iterativeShorten(1, 0.0); // one step, no internal length check (we check our own, correctly-signed one)
+    iterations++;
+    double lengthAfter = net.length();
+    if (std::abs(lengthAfter - lengthBefore) < 1e-12) {
+      // No progress possible (wedgeAngleQueue emptied internally) --
+      // a real local minimum for this loop's max turning angle, not a
+      // cap being hit. Further calls would spin forever without
+      // changing anything.
+      converged = true;
+      break;
+    }
+    double relDecrease = (initLength - lengthAfter) / initLength;
+    if (relDecrease > hardMaxRelDecrease) {
+      hitRelDecreaseCap = true;
+      break;
+    }
+    maxTurn = maxClosedLoopTurningAngleDeg(net);
+  }
+  double finalLength = net.length();
+  bool hitIterationCap = !converged && !hitRelDecreaseCap && iterations >= hardMaxIterations;
+  return {iterations, maxTurn, (initLength - finalLength) / initLength,
+          maxTurn <= targetMaxTurnDeg, hitRelDecreaseCap, hitIterationCap, converged};
+}
+
 int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, const std::string& pathCSV,
                         double unitsScale, bool unsafeShorten, const std::string& exportPathOut,
-                        int boundedShortenMaxIters, double boundedShortenMaxRelDecrease) {
+                        int boundedShortenMaxIters, double boundedShortenMaxRelDecrease,
+                        double adaptiveTargetMaxTurnDeg, size_t adaptiveHardMaxIters,
+                        double adaptiveHardMaxRelDecrease) {
   // Error code, not exception: check the precondition ourselves and fail
   // explicitly before ever calling into geometry-central, rather than
   // relying on catching whatever it throws. See checkMeshFileOrError()'s
@@ -713,6 +802,62 @@ int runHeadlessMeasure(const std::string& meshFile, const std::string& loopCSV, 
       size_t dot = boundedOut.rfind('.');
       boundedOut = (dot == std::string::npos) ? boundedOut + "_bounded" : boundedOut.substr(0, dot) + "_bounded" + boundedOut.substr(dot);
       exportPolyline3D(*net, boundedOut, unitsScale);
+    }
+  }
+
+  // ADAPTIVE shortening: the default-recommended path, and the one
+  // --measure-loop-adaptive-shorten enables. iFire: "it has to work
+  // for possible anny and custom models so you can't hard code" --
+  // --measure-loop-bounded-shorten's fixed maxIterations/
+  // maxRelativeLengthDecrease were empirically tuned against ONE
+  // mesh's loop sizes (ANNY-SOMA-X) and do not transfer: a smaller or
+  // coarser custom mesh could still be jagged at that iteration count,
+  // or could already be sliding toward collapse before reaching it.
+  // This stops on a real geometric criterion instead -- the max
+  // turning angle along the exported polyline, which means the same
+  // thing (a visibly sharp kink vs. a smooth curve) on any mesh at any
+  // scale. hardMaxIterations/hardMaxRelDecrease are safety nets only
+  // (runtime cap, collapse guard), not what decides "done".
+  if (adaptiveTargetMaxTurnDeg > 0) {
+    AdaptiveShortenResult res =
+        adaptiveShortenToAngle(*net, adaptiveTargetMaxTurnDeg, adaptiveHardMaxIters, adaptiveHardMaxRelDecrease);
+    std::cout << "ADAPTIVE_SHORTEN_LENGTH " << (net->length() * unitsScale) << std::endl;
+    std::cout << "ADAPTIVE_SHORTEN_ITERS " << res.iterations << std::endl;
+    std::cout << "ADAPTIVE_SHORTEN_REL_DECREASE " << res.finalRelDecrease << std::endl;
+    std::cout << "ADAPTIVE_SHORTEN_MAX_TURN_DEG " << res.finalMaxTurnDeg << std::endl;
+    std::cout << "ADAPTIVE_SHORTEN_HIT_ANGLE_TARGET " << (res.hitAngleTarget ? 1 : 0) << std::endl;
+    std::cout << "ADAPTIVE_SHORTEN_CONVERGED " << (res.converged ? 1 : 0) << std::endl;
+    if (!res.hitAngleTarget) {
+      // Not a failure -- an honest signal: this loop could not reach
+      // the requested smoothness within the safety nets (e.g. a real
+      // sharp anatomical fold the local-flip search has no further
+      // move for, or a safety cap tripped first). The caller decides
+      // whether that is acceptable; we do not silently claim success.
+      std::string reason = res.converged
+                                ? "the local-flip search converged (no further improving flip exists) -- a "
+                                  "real local minimum for this loop's geometry, not a cap"
+                                : (res.hitRelDecreaseCap ? "hit the relative-decrease safety cap"
+                                                          : "hit the iteration safety cap");
+      std::cerr << "NOTE: --measure-loop-adaptive-shorten did not reach the " << adaptiveTargetMaxTurnDeg
+                << "deg target (stopped at " << res.finalMaxTurnDeg << "deg: " << reason << ")." << std::endl;
+    }
+    // PLANTED CONTROL: same collapse signature as --measure-loop-
+    // unsafe-shorten's cylinder test (18.842 -> 0.589, 97% decrease) --
+    // catch it even if the caller passed an overly loose
+    // hardMaxRelDecrease.
+    if (res.finalRelDecrease > 0.5) {
+      std::cerr << "CONTROL FAILED: ADAPTIVE_SHORTEN dropped length by " << (res.finalRelDecrease * 100)
+                << "% -- this looks like the known collapse failure mode, not legitimate local straightening. "
+                   "Refusing to trust ADAPTIVE_SHORTEN_LENGTH."
+                << std::endl;
+      return EXIT_FAILURE;
+    }
+    if (!exportPathOut.empty()) {
+      std::string adaptiveOut = exportPathOut;
+      size_t dot = adaptiveOut.rfind('.');
+      adaptiveOut = (dot == std::string::npos) ? adaptiveOut + "_adaptive"
+                                                 : adaptiveOut.substr(0, dot) + "_adaptive" + adaptiveOut.substr(dot);
+      exportPolyline3D(*net, adaptiveOut, unitsScale);
     }
   }
 
@@ -984,6 +1129,23 @@ int main(int argc, char** argv) {
   args::ValueFlag<std::string> exportPathFlag(
       parser, "out.json", "Headless: also write the real straightened/Delaunay path's 3D polyline as JSON.",
       {"export-path"});
+  args::ValueFlag<double> adaptiveShortenTargetDegFlag(
+      parser, "targetMaxTurnDeg",
+      "RECOMMENDED, mesh-size-independent --measure-loop smoothing: run iterativeShorten one step at a time, "
+      "stopping as soon as the loop's largest turning angle drops to or below this many degrees -- a real "
+      "geometric criterion (a visibly sharp kink vs. a smooth curve means the same thing on any mesh at any "
+      "scale), unlike --measure-loop-bounded-shorten's fixed iteration/length-decrease caps, which were tuned "
+      "against one specific mesh's loop sizes and do not transfer to a different model. 0 = off (default).",
+      {"measure-loop-adaptive-shorten"}, 0.0);
+  args::ValueFlag<size_t> adaptiveShortenHardMaxItersFlag(
+      parser, "hardMaxIterations", "Safety net (runtime cap, NOT the stopping criterion) for --measure-loop-adaptive-shorten.",
+      {"measure-loop-adaptive-shorten-hard-max-iters"}, 2000);
+  args::ValueFlag<double> adaptiveShortenHardMaxRelDecreaseFlag(
+      parser, "hardMaxRelativeLengthDecrease",
+      "Safety net (collapse guard, NOT the stopping criterion) for --measure-loop-adaptive-shorten: refuse to "
+      "keep shortening once the loop's length has dropped by more than this fraction of its starting length, "
+      "regardless of whether the angle target was reached.",
+      {"measure-loop-adaptive-shorten-hard-max-rel-decrease"}, 0.3);
 
   try {
     parser.ParseCLI(argc, argv);
@@ -1007,7 +1169,9 @@ int main(int argc, char** argv) {
     return runHeadlessMeasure(args::get(inputFilename), measureLoopFlag ? args::get(measureLoopFlag) : "",
                                measurePathFlag ? args::get(measurePathFlag) : "", args::get(unitsScaleFlag),
                                static_cast<bool>(unsafeShortenFlag), exportPathFlag ? args::get(exportPathFlag) : "",
-                               args::get(boundedShortenItersFlag), args::get(boundedShortenRelDecreaseFlag));
+                               args::get(boundedShortenItersFlag), args::get(boundedShortenRelDecreaseFlag),
+                               args::get(adaptiveShortenTargetDegFlag), args::get(adaptiveShortenHardMaxItersFlag),
+                               args::get(adaptiveShortenHardMaxRelDecreaseFlag));
   }
 
   polyscope::init();
